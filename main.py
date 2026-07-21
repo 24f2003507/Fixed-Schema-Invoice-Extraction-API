@@ -21,12 +21,12 @@ class InvoiceRequest(BaseModel):
 
 
 def parse_amount(text):
-    if text is None:
+    if not text:
         return None
 
     text = text.replace(",", "")
-    text = text.replace("₹", "")
-    text = re.sub(r"\b(Rs\.?|INR|USD)\b", "", text, flags=re.I)
+    text = re.sub(r"[₹$€£]", "", text)
+    text = re.sub(r"\b(Rs\.?|INR|USD|EUR|GBP)\b", "", text, flags=re.I)
 
     nums = re.findall(r"\d+(?:\.\d+)?", text)
 
@@ -49,8 +49,8 @@ def extract_line_value(text, keywords):
 
 
 def search(patterns, text):
-    for p in patterns:
-        m = re.search(p, text, re.I | re.M)
+    for pattern in patterns:
+        m = re.search(pattern, text, re.I | re.M)
         if m:
             return m.group(1).strip()
     return None
@@ -89,61 +89,115 @@ def extract(req: InvoiceRequest):
 
     text = req.invoice_text
 
+    # -----------------------------
+    # Invoice Number
+    # -----------------------------
     invoice_no = search([
-        r"Invoice\s*(?:No|Number|#)?\s*[:\-]?\s*([A-Za-z0-9\-\/]+)",
-        r"Ref\s*[:\-]?\s*([A-Za-z0-9\-\/]+)",
-        r"Reference\s*[:\-]?\s*([A-Za-z0-9\-\/]+)"
+        r"Invoice\s*No\.?\s*[:#-]?\s*([A-Za-z0-9/-]+)",
+        r"Invoice\s*Number\s*[:#-]?\s*([A-Za-z0-9/-]+)",
+        r"Invoice\s*#\s*([A-Za-z0-9/-]+)",
+        r"Bill\s*No\.?\s*[:#-]?\s*([A-Za-z0-9/-]+)",
+        r"Ref(?:erence)?\s*[:#-]?\s*([A-Za-z0-9/-]+)",
+        r"Inv\.?\s*[:#-]?\s*([A-Za-z0-9/-]+)",
     ], text)
 
-    date = parse_date(search([
-        r"Date\s*[:\-]?\s*(.+)",
-        r"Issued\s*[:\-]?\s*(.+)"
-    ], text))
+    if invoice_no in ("Invoice", "No", "Number"):
+        invoice_no = None
 
+    if invoice_no is None:
+        m = re.search(r"\b[A-Z]{1,6}-\d{2,}\b", text)
+        if m:
+            invoice_no = m.group(0)
+
+    # -----------------------------
+    # Date
+    # -----------------------------
+    raw_date = search([
+        r"Date\s*[:\-]?\s*(.+)",
+        r"Issued\s*[:\-]?\s*(.+)",
+        r"Invoice\s*Date\s*[:\-]?\s*(.+)",
+        r"Bill\s*Date\s*[:\-]?\s*(.+)",
+    ], text)
+
+    date = parse_date(raw_date)
+
+    if date is None:
+        m = re.search(r"\b\d{4}-\d{2}-\d{2}\b", text)
+        if m:
+            date = m.group(0)
+
+    # -----------------------------
+    # Vendor
+    # -----------------------------
     vendor = search([
         r"Vendor\s*[:\-]?\s*(.+)",
         r"Supplier\s*[:\-]?\s*(.+)",
         r"Seller\s*[:\-]?\s*(.+)",
-        r"Company\s*[:\-]?\s*(.+)"
+        r"Company\s*[:\-]?\s*(.+)",
+        r"From\s*[:\-]?\s*(.+)",
     ], text)
 
-    amount = extract_line_value(
-        text,
-        [
-            "subtotal",
-            "sub total",
-            "taxable value",
-            "base amount",
-            "net amount"
-        ]
-    )
+    # -----------------------------
+    # Amount
+    # -----------------------------
+    amount = extract_line_value(text, [
+        "subtotal",
+        "sub total",
+        "taxable value",
+        "net amount",
+        "base amount",
+        "amount before tax",
+        "pre-tax"
+    ])
 
-    tax = extract_line_value(
-        text,
-        [
-            "gst",
-            "igst",
-            "cgst",
-            "sgst",
-            "vat",
-            "tax"
-        ]
-    )
+    # -----------------------------
+    # Tax
+    # -----------------------------
+    tax = extract_line_value(text, [
+        "igst",
+        "cgst",
+        "sgst",
+        "gst",
+        "vat",
+        "sales tax",
+        "tax"
+    ])
 
-    total = extract_line_value(
-        text,
-        [
-            "grand total",
-            "total due",
-            "total"
-        ]
-    )
+    # -----------------------------
+    # Total
+    # -----------------------------
+    total = extract_line_value(text, [
+        "grand total",
+        "total due",
+        "invoice total",
+        "amount due",
+        "total"
+    ])
 
     # Infer subtotal if missing
     if amount is None and total is not None and tax is not None:
         amount = round(total - tax, 2)
 
+    # Last-resort inference from money values
+    if amount is None:
+        values = []
+
+        for x in re.findall(r"\d[\d,]*(?:\.\d+)?", text):
+            try:
+                v = float(x.replace(",", ""))
+                if v > 100:
+                    values.append(v)
+            except:
+                pass
+
+        values = sorted(set(values))
+
+        if len(values) >= 3:
+            amount = values[-2]
+
+    # -----------------------------
     # Currency
+    # -----------------------------
     currency = search([
         r"Currency\s*[:\-]?\s*([A-Z]{3})"
     ], text)
@@ -153,6 +207,10 @@ def extract(req: InvoiceRequest):
             currency = "INR"
         elif "$" in text:
             currency = "USD"
+        elif "EUR" in text or "€" in text:
+            currency = "EUR"
+        elif "GBP" in text or "£" in text:
+            currency = "GBP"
 
     return {
         "invoice_no": invoice_no,
