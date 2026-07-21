@@ -21,22 +21,30 @@ class InvoiceRequest(BaseModel):
 
 
 def search(patterns, text):
-    for p in patterns:
-        m = re.search(p, text, re.IGNORECASE | re.MULTILINE)
+    for pattern in patterns:
+        m = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
         if m:
             return m.group(1).strip()
     return None
 
 
-def parse_amount(s):
-    if s is None:
+def parse_amount(value):
+    if value is None:
         return None
-    s = re.sub(r"[₹$,]", "", s)
-    s = re.sub(r"\b(Rs\.?|INR|USD)\b", "", s, flags=re.I)
-    s = s.strip()
+
+    value = (
+        value.replace(",", "")
+        .replace("₹", "")
+        .replace("$", "")
+        .replace("Rs.", "")
+        .replace("Rs", "")
+        .replace("INR", "")
+        .replace("USD", "")
+        .strip()
+    )
 
     try:
-        return float(s)
+        return float(value)
     except:
         return None
 
@@ -60,13 +68,18 @@ def parse_date(date_str):
         "%b %d, %Y",
     ]
 
-    for f in formats:
+    for fmt in formats:
         try:
-            return datetime.strptime(date_str, f).strftime("%Y-%m-%d")
+            return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
         except:
             pass
 
     return None
+
+
+@app.get("/")
+def home():
+    return {"status": "ok"}
 
 
 @app.post("/extract")
@@ -75,14 +88,15 @@ def extract(req: InvoiceRequest):
     text = req.invoice_text
 
     invoice_no = search([
-        r"Invoice\s*(?:No|Number|#)?\s*[:\-]?\s*([A-Za-z0-9\-\/]+)",
-        r"Ref\s*[:\-]?\s*([A-Za-z0-9\-\/]+)",
-        r"Reference\s*[:\-]?\s*([A-Za-z0-9\-\/]+)"
+        r"Invoice\s*(?:No|Number|#)?\s*[:\-]?\s*([A-Za-z0-9\-/]+)",
+        r"Ref(?:erence)?\s*[:\-]?\s*([A-Za-z0-9\-/]+)",
+        r"Bill\s*No\s*[:\-]?\s*([A-Za-z0-9\-/]+)"
     ], text)
 
     date = parse_date(search([
         r"Date\s*[:\-]?\s*(.+)",
-        r"Issued\s*[:\-]?\s*(.+)"
+        r"Issued\s*[:\-]?\s*(.+)",
+        r"Invoice\s*Date\s*[:\-]?\s*(.+)"
     ], text))
 
     vendor = search([
@@ -94,58 +108,62 @@ def extract(req: InvoiceRequest):
     ], text)
 
     amount = parse_amount(search([
-        r"Subtotal.*?([\d,]+\.\d+|[\d,]+)",
-        r"Sub\s*Total.*?([\d,]+\.\d+|[\d,]+)",
-        r"Taxable\s*Value.*?([\d,]+\.\d+|[\d,]+)",
-        r"Net\s*Amount.*?([\d,]+\.\d+|[\d,]+)",
-        r"Base\s*Amount.*?([\d,]+\.\d+|[\d,]+)"
+        r"Subtotal.*?([\d,]+(?:\.\d+)?)",
+        r"Sub\s*Total.*?([\d,]+(?:\.\d+)?)",
+        r"Taxable\s*Value.*?([\d,]+(?:\.\d+)?)",
+        r"Base\s*Amount.*?([\d,]+(?:\.\d+)?)",
+        r"Net\s*Amount.*?([\d,]+(?:\.\d+)?)"
     ], text))
 
     tax = parse_amount(search([
-        r"GST.*?([\d,]+\.\d+|[\d,]+)",
-        r"IGST.*?([\d,]+\.\d+|[\d,]+)",
-        r"CGST.*?([\d,]+\.\d+|[\d,]+)",
-        r"SGST.*?([\d,]+\.\d+|[\d,]+)",
-        r"Tax.*?([\d,]+\.\d+|[\d,]+)"
+        r"GST.*?([\d,]+(?:\.\d+)?)",
+        r"IGST.*?([\d,]+(?:\.\d+)?)",
+        r"CGST.*?([\d,]+(?:\.\d+)?)",
+        r"SGST.*?([\d,]+(?:\.\d+)?)",
+        r"Tax.*?([\d,]+(?:\.\d+)?)"
     ], text))
 
     total = parse_amount(search([
-        r"Grand\s*Total.*?([\d,]+\.\d+|[\d,]+)",
-        r"Total\s*Due.*?([\d,]+\.\d+|[\d,]+)",
-        r"TOTAL.*?([\d,]+\.\d+|[\d,]+)",
-        r"Total.*?([\d,]+\.\d+|[\d,]+)"
+        r"Grand\s*Total.*?([\d,]+(?:\.\d+)?)",
+        r"Total\s*Due.*?([\d,]+(?:\.\d+)?)",
+        r"TOTAL.*?([\d,]+(?:\.\d+)?)",
+        r"Total.*?([\d,]+(?:\.\d+)?)"
     ], text))
 
-    # Fallback inference
+    # Better fallback: only extract currency amounts
     if amount is None:
-        nums = [
-            float(x.replace(",", ""))
-            for x in re.findall(r"\d[\d,]*(?:\.\d+)?", text)
-        ]
 
-        nums = sorted(set(nums))
+        money_strings = re.findall(
+            r"(?:₹|Rs\.?|INR|\$)\s*([\d,]+(?:\.\d+)?)",
+            text,
+            flags=re.IGNORECASE,
+        )
 
-        # Try to infer subtotal from total-tax
+        money = sorted(
+            {float(x.replace(",", "")) for x in money_strings}
+        )
+
         if total is not None and tax is not None:
-            candidate = total - tax
-            for n in nums:
+            candidate = round(total - tax, 2)
+            for n in money:
                 if abs(n - candidate) < 0.01:
                     amount = n
                     break
 
-        # If only three money values exist, assume:
-        # smallest = tax
-        # middle = subtotal
-        # largest = total
-        if amount is None and len(nums) == 3:
-            amount = nums[1]
+        if amount is None and len(money) == 3:
+            # tax, subtotal, total
+            amount = money[1]
+
+        if amount is None and len(money) == 2:
+            # subtotal, total
+            amount = min(money)
 
     currency = search([
         r"Currency\s*[:\-]?\s*([A-Z]{3})"
     ], text)
 
     if currency is None:
-        if "₹" in text or "Rs" in text or "INR" in text:
+        if re.search(r"₹|Rs\.?|INR", text, re.I):
             currency = "INR"
         elif "$" in text:
             currency = "USD"
@@ -156,5 +174,5 @@ def extract(req: InvoiceRequest):
         "vendor": vendor,
         "amount": amount,
         "tax": tax,
-        "currency": currency
+        "currency": currency,
     }
