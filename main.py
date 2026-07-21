@@ -38,6 +38,7 @@ def parse_amount(value):
         .replace("Rs.", "")
         .replace("Rs", "")
         .replace("INR", "")
+        .replace("$", "")
         .strip()
     )
 
@@ -88,7 +89,9 @@ def extract(req: InvoiceRequest):
     invoice_no = search(
         [
             r"Invoice\s*(?:No|Number|#)?\s*[:\-]?\s*([A-Za-z0-9\-\/]+)",
-            r"Ref\s*[:\-]?\s*([A-Za-z0-9\-\/]+)",
+            r"Ref(?:erence)?\s*[:\-]?\s*([A-Za-z0-9\-\/]+)",
+            r"Invoice\s*ID\s*[:\-]?\s*([A-Za-z0-9\-\/]+)",
+            r"Bill\s*No\s*[:\-]?\s*([A-Za-z0-9\-\/]+)",
         ],
         text,
     )
@@ -98,6 +101,8 @@ def extract(req: InvoiceRequest):
             [
                 r"Date\s*[:\-]?\s*(.+)",
                 r"Issued\s*[:\-]?\s*(.+)",
+                r"Invoice\s*Date\s*[:\-]?\s*(.+)",
+                r"Bill\s*Date\s*[:\-]?\s*(.+)",
             ],
             text,
         )
@@ -108,6 +113,8 @@ def extract(req: InvoiceRequest):
             r"Vendor\s*[:\-]?\s*(.+)",
             r"Supplier\s*[:\-]?\s*(.+)",
             r"Company\s*[:\-]?\s*(.+)",
+            r"Seller\s*[:\-]?\s*(.+)",
+            r"From\s*[:\-]?\s*(.+)",
             r"Client\s*[:\-]?\s*(.+)",
         ],
         text,
@@ -116,8 +123,16 @@ def extract(req: InvoiceRequest):
     amount = parse_amount(
         search(
             [
-                r"Subtotal.*?(?:₹|Rs\.?|INR)?\s*([\d,]+(?:\.\d+)?)",
-                r"Sub\s*Total.*?(?:₹|Rs\.?|INR)?\s*([\d,]+(?:\.\d+)?)",
+                r"Subtotal.*?(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
+                r"Sub\s*Total.*?(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
+                r"Amount\s*Before\s*Tax.*?(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
+                r"Before\s*Tax.*?(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
+                r"Taxable\s*Value.*?(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
+                r"Net\s*Amount.*?(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
+                r"Base\s*Amount.*?(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
+                r"Line\s*Total.*?(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
+                r"Amount\s*[:\-]?\s*(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
+                r"Value\s*[:\-]?\s*(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
             ],
             text,
         )
@@ -126,11 +141,12 @@ def extract(req: InvoiceRequest):
     tax = parse_amount(
         search(
             [
-                r"IGST.*?(?:₹|Rs\.?|INR)?\s*([\d,]+(?:\.\d+)?)",
-                r"CGST.*?(?:₹|Rs\.?|INR)?\s*([\d,]+(?:\.\d+)?)",
-                r"SGST.*?(?:₹|Rs\.?|INR)?\s*([\d,]+(?:\.\d+)?)",
-                r"GST.*?(?:₹|Rs\.?|INR)?\s*([\d,]+(?:\.\d+)?)",
-                r"Tax.*?(?:₹|Rs\.?|INR)?\s*([\d,]+(?:\.\d+)?)",
+                r"IGST.*?(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
+                r"CGST.*?(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
+                r"SGST.*?(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
+                r"GST.*?(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
+                r"Tax\s*[:\-]?\s*(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
+                r"VAT.*?(?:₹|Rs\.?|INR|\$)?\s*([\d,]+(?:\.\d+)?)",
             ],
             text,
         )
@@ -146,9 +162,9 @@ def extract(req: InvoiceRequest):
     if currency is None:
         if re.search(r"₹|Rs\.?|INR", text, re.IGNORECASE):
             currency = "INR"
-        elif re.search(r"\$", text):
+        elif "$" in text:
             currency = "USD"
-        elif re.search(r"EUR|€", text):
+        elif "€" in text or "EUR" in text:
             currency = "EUR"
 
     return {
